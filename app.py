@@ -238,13 +238,28 @@ def get_api_key():
 
 with st.sidebar:
     st.header("Configurações")
+    st.caption("Conecte a API para criar livros com inteligência artificial.")
+
+    # A chave pode vir dos segredos do Streamlit ou ser digitada nesta sessão.
+    # O campo não grava a chave em arquivo nem a exibe por padrão.
+    show_api_key = st.checkbox("Mostrar chave da API", value=False)
     api_key = st.text_input(
         "Chave da API OpenAI",
         value=get_api_key(),
-        type="password",
-        help="Preferencialmente configure OPENAI_API_KEY em st.secrets.",
+        type="default" if show_api_key else "password",
+        key="openai_api_key_input",
+        placeholder="Cole sua chave da API aqui",
+        help=(
+            "A chave fica oculta por padrão. Para uso publicado, prefira configurar "
+            "OPENAI_API_KEY nos Secrets do Streamlit; não compartilhe sua chave."
+        ),
     )
-    model = st.selectbox("Modelo", ["gpt-4o", "gpt-4o-mini"], index=1)
+    if api_key.strip():
+        st.caption("✓ Chave preenchida — ainda será validada pela API ao gerar o livro.")
+    else:
+        st.caption("Nenhuma chave informada. A conversão de DOCX para PDF continua disponível.")
+
+    model = st.selectbox("Modelo", ["gpt-4o-mini", "gpt-4o"], index=0)
     st.caption("A utilização da API é cobrada separadamente da assinatura do ChatGPT.")
 
 mode = st.radio(
@@ -290,14 +305,14 @@ if mode == "Criar livro com IA":
     )
 
     if st.button("Gerar manuscrito e PDF", type="primary"):
-        if not api_key:
+        if not api_key or not api_key.strip():
             st.error("Insira a chave da API ou configure OPENAI_API_KEY nos segredos do Streamlit.")
             st.stop()
         if not title.strip() or not author.strip() or not premise.strip():
             st.error("Preencha o título, o nome do autor e a premissa.")
             st.stop()
 
-        client = OpenAI(api_key=api_key)
+        client = OpenAI(api_key=api_key.strip())
         progress = st.progress(0)
         status = st.empty()
 
@@ -415,8 +430,14 @@ Texto:
             )
 
         except Exception as exc:
-            st.error(f"Não foi possível concluir a geração: {exc}")
-            st.caption("Confira a chave, os créditos da API, o nome do modelo e as dependências instaladas.")
+            # Mensagens mais claras para erros comuns da API; detalhes técnicos continuam disponíveis.
+            if exc.__class__.__name__ == "AuthenticationError":
+                st.error("A OpenAI recusou a chave informada. Confira se ela está correta e ativa.")
+            elif exc.__class__.__name__ == "RateLimitError":
+                st.error("A API recusou a solicitação por limite ou saldo. Confira o faturamento e os limites da API.")
+            else:
+                st.error(f"Não foi possível concluir a geração: {exc}")
+            st.caption("Confira a chave, o faturamento/créditos da API, o modelo escolhido e as dependências instaladas.")
 
 else:
     st.subheader("Preparar manuscrito existente")
