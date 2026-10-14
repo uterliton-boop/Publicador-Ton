@@ -1,373 +1,1028 @@
-import os
+
+import html
+import json
+import re
+import io
+from pathlib import Path
+from datetime import datetime
+
 import streamlit as st
 from openai import OpenAI
-from weasyprint import HTML, CSS
+from weasyprint import HTML
+from pypdf import PdfReader
 
-st.set_page_config(page_title="Atlas Studio: Editora & Publicador 1-Click", page_icon="📚", layout="centered")
+# ==========================================================
+# ATLAS STUDIO — EDITORA & PUBLICADOR
+# ==========================================================
 
-# Estilização Visual Avançada (Tema Editorial Moderno e Elegante)
-st.markdown("""
-    <style>
-    .stApp {
-        background-color: #0b0f19;
-        color: #f3f4f6;
-        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+st.set_page_config(
+    page_title="Atlas Studio | Publicador Editorial",
+    page_icon="📚",
+    layout="wide",
+)
+
+PASTA_PROJETOS = Path("atlas_projects")
+PASTA_PROJETOS.mkdir(exist_ok=True)
+
+# Preços de referência em USD por 1 milhão de tokens.
+# Confira os valores atuais no site da OpenAI antes de usar.
+PRECOS = {
+    "gpt-4o-mini": {"entrada": 0.15, "saida": 0.60},
+    "gpt-4o": {"entrada": 2.50, "saida": 10.00},
+}
+
+
+# ==========================================================
+# FUNÇÕES DE APOIO
+# ==========================================================
+
+def nome_seguro(texto):
+    texto = re.sub(r"[^\w-]+", "_", texto.strip(), flags=re.UNICODE)
+    return texto.strip("_")[:80] or "projeto"
+
+
+def contar_palavras(texto):
+    return len(re.findall(r"\b[\wÀ-ÿ]+(?:[-'][\wÀ-ÿ]+)*\b", texto or ""))
+
+
+def caminho_projeto(titulo):
+    return PASTA_PROJETOS / f"{nome_seguro(titulo)}.json"
+
+
+def salvar_projeto(projeto):
+    """Salva primeiro em arquivo temporário para reduzir risco de corrupção."""
+    projeto["atualizado_em"] = datetime.now().isoformat(timespec="seconds")
+    destino = caminho_projeto(projeto["titulo"])
+    temporario = destino.with_suffix(".tmp")
+
+    temporario.write_text(
+        json.dumps(projeto, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temporario.replace(destino)
+    return destino
+
+
+def carregar_projeto(caminho):
+    return json.loads(Path(caminho).read_text(encoding="utf-8"))
+
+
+def calcular_custo(modelo, tokens_entrada, tokens_saida):
+    preco = PRECOS[modelo]
+    return (
+        tokens_entrada * preco["entrada"]
+        + tokens_saida * preco["saida"]
+    ) / 1_000_000
+
+
+def registrar_uso(projeto, uso, modelo):
+    projeto.setdefault("uso", {
+        "entrada": 0,
+        "saida": 0,
+        "custo_usd": 0.0,
+    })
+
+    projeto["uso"]["entrada"] += uso["entrada"]
+    projeto["uso"]["saida"] += uso["saida"]
+
+    projeto["uso"]["custo_usd"] = calcular_custo(
+        modelo,
+        projeto["uso"]["entrada"],
+        projeto["uso"]["saida"],
+    )
+
+
+def chamada_ia(cliente, modelo, mensagens, temperatura=0.5,
+               max_tokens=3000):
+    resposta = cliente.chat.completions.create(
+        model=modelo,
+        messages=mensagens,
+        temperature=temperatura,
+        max_tokens=max_tokens,
+    )
+
+    texto = (resposta.choices[0].message.content or "").strip()
+    uso_api = resposta.usage
+
+    uso = {
+        "entrada": uso_api.prompt_tokens if uso_api else 0,
+        "saida": uso_api.completion_tokens if uso_api else 0,
     }
-    .main-title {
-        font-size: 2.2rem;
-        font-weight: 800;
-        background: linear-gradient(90deg, #60a5fa, #c084fc);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        text-align: center;
-        margin-bottom: 0px;
-    }
-    .subtitle {
-        text-align: center;
-        color: #9ca3af;
-        font-size: 1rem;
-        margin-bottom: 2rem;
-    }
-    .stButton>button {
-        width: 100%;
-        background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
-        color: white;
-        font-weight: 600;
-        border: none;
-        border-radius: 12px;
-        padding: 12px 20px;
-        box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3);
-        transition: all 0.3s ease;
-    }
-    .stButton>button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 6px 16px rgba(79, 70, 229, 0.5);
-    }
-    .stTextInput>div>div>input, .stTextArea>div>div>textarea, .stSelectbox>div>div>div {
-        background-color: #1e1b4b;
-        color: #f3f4f6;
-        border: 1px solid #312e81;
-        border-radius: 10px;
-    }
-    </style>
-""", unsafe_allow_html=True)
 
-st.markdown('<p class="main-title">📚 Atlas Studio</p>', unsafe_allow_html=True)
-st.markdown('<p class="subtitle">Editora e Estúdio Automatizado de Alta Densidade Literária</p>', unsafe_allow_html=True)
+    return texto, uso
 
-secret_key = st.secrets.get("OPENAI_API_KEY", "") if hasattr(st, "secrets") else ""
-api_key_input = st.text_input("🔑 Chave da API OpenAI (GPT-4o / DALL-E 3)", value=secret_key, type="password")
 
-if api_key_input:
-    client = OpenAI(api_key=api_key_input)
-else:
-    st.warning("⚠️ Insira a sua chave da API da OpenAI para continuar.")
+def extrair_titulos(texto, quantidade):
+    titulos = []
 
-modo = st.radio("Selecione o Fluxo de Trabalho:", ["📝 Gerar Obra Consistente (12 Capítulos / 10 Subpartes)", "📁 Enviar Manuscrito Existente (.docx)"])
-st.markdown("---")
+    for linha in texto.splitlines():
+        linha = re.sub(
+            r"^\s*(?:cap[ií]tulo\s*)?\d+[\s.):\-]*",
+            "",
+            linha,
+            flags=re.IGNORECASE,
+        ).strip(" -*#\t")
 
-if modo == "📝 Gerar Obra Consistente (12 Capítulos / 10 Subpartes)":
-    st.subheader("⚙️ Configuração e Identidade da Obra")
-    
-    titulo_livro = st.text_input("Título do Livro", "O Peso do Silêncio e das Estrelas")
-    nome_autor = st.text_input("Nome do Autor", "Uterliton Araujo Silva")
-    nome_protagonista = st.text_input("Nome do Protagonista Principal (Trava de Identidade)", "Clara")
-    genero = st.selectbox("Gênero Literário", ["Romance Filosófico / Épico", "Desenvolvimento Pessoal / Filosofia Profunda", "Drama Psicológico Intenso"])
-    ideia_central = st.text_area("Premisa e Enredo Geral", "Uma obra monumental sobre escolhas, o peso do tempo, a vulnerabilidade e a descoberta interior.")
-    tom_voz = st.selectbox("Tom de Voz", ["Contemplativo, extremamente detalhado, filosófico e imersivo", "Dramático, poético e analítico"])
+        if linha:
+            titulos.append(linha)
 
-    # Estados da sessão para persistência
-    if "capitulos_texto" not in st.session_state:
-        st.session_state.capitulos_texto = {}
-    if "sumario_lista" not in st.session_state:
-        st.session_state.sumario_lista = []
-    if "livro_revisado" not in st.session_state:
-        st.session_state.livro_revisado = False
-    if "capas_geradas" not in st.session_state:
-        st.session_state.capas_geradas = []
+    return titulos[:quantidade]
 
-    # BOTÃO 1: Escrever Obra
-    if st.button("🚀 1. Escrever Obra com Protagonista Único (12 Capítulos)"):
-        if not api_key_input:
-            st.error("Insira a Chave da API.")
-        elif not nome_protagonista:
-            st.error("Por favor, preencha o nome do protagonista.")
-        else:
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            try:
-                status_text.text("Passo 1: Criando arquitetura de 12 capítulos...")
-                progress_bar.progress(2)
-                
-                prompt_est = f"Crie um sumário exato de 12 títulos de capítulos coesos e progressivos para o livro '{titulo_livro}' ({genero}), centrado na jornada de {nome_protagonista}. Retorne apenas os 12 títulos, um por linha, numerados."
-                res_est = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt_est}], temperature=0.7)
-                capitulos_limpos = [c.strip() for c in res_est.choices[0].message.content.split("\n") if c.strip()][:12]
-                st.session_state.sumario_lista = capitulos_limpos
 
-                st.session_state.capitulos_texto = {}
-                total_caps = len(capitulos_limpos)
-                total_etapas = total_caps * 10
-                etapa_atual = 0
+def criar_pdf(titulo, autor, capitulos, biografia):
+    """Escapa o texto para não interpretar conteúdo do manuscrito como HTML."""
 
-                for i, cap_titulo in enumerate(capitulos_limpos, 1):
-                    texto_completo_capitulo = f"<h2>{cap_titulo}</h2>\n"
-                    contexto_sub = f"Início do capítulo {cap_titulo} com a protagonista {nome_protagonista}."
+    partes = []
+    sumario = []
 
-                    for sub in range(1, 11):
-                        etapa_atual += 1
-                        porcentagem = int(5 + (etapa_atual / total_etapas) * 85)
-                        progress_bar.progress(min(porcentagem, 95))
-                        status_text.text(f"Escrevendo Capítulo {i}/12 (Subparte {sub}/10) - Focado em {nome_protagonista}...")
+    for numero, capitulo in enumerate(capitulos, start=1):
+        titulo_capitulo = html.escape(capitulo["titulo"])
+        texto = capitulo["texto"]
 
-                        prompt_sub = f"""
-                        Escreva a Subparte {sub} de 10 do Capítulo {i} ({cap_titulo}) para o livro '{titulo_livro}', de {nome_autor}.
-                        REGRAS ABSOLUTAS DE CONTINUIDADE E IDENTIDADE (OBRIGATÓRIO):
-                        - A ÚNICA E EXCLUSIVA protagonista desta história deve ser '{nome_protagonista}'. NUNCA mude o nome para outro. É sempre '{nome_protagonista}' do início ao fim.
-                        - Mantenha absoluta consistência com os acontecimentos anteriores.
-                        - Desenvolva diálogos profundos, descrições ricas e reflexões psicológicas aprofundadas. Esta subparte deve ser longa.
-                        - Contexto do trecho anterior: {contexto_sub[-500:]}
-                        - Tom: {tom_voz}.
-                        - Formatação: Retorne estritamente em HTML limpo usando tags <p> para os parágrafos. Nunca use blocos de código ```html.
-                        """
+        paragrafos = [
+            p.strip()
+            for p in re.split(r"\n\s*\n", texto)
+            if p.strip()
+        ]
 
-                        res_s = client.chat.completions.create(
-                            model="gpt-4o",
-                            messages=[{"role": "user", "content": prompt_sub}],
-                            temperature=0.75,
-                            max_tokens=4000
-                        )
-                        conteudo_sub = res_s.choices[0].message.content
-                        texto_completo_capitulo += f"\n{conteudo_sub}\n"
-                        contexto_sub += f" | {conteudo_sub[-300:]}"
-
-                    st.session_state.capitulos_texto[i] = texto_completo_capitulo
-
-                progress_bar.progress(100)
-                status_text.text("✅ Obra gerada com identidade e protagonista fixos!")
-                st.session_state.livro_revisado = False
-                st.rerun()
-
-            except Exception as e:
-                st.error(f"Erro na geração: {e}")
-
-    if st.session_state.capitulos_texto:
-        st.success(f"📚 Obra carregada na memória com capítulos consistentes focados em {nome_protagonista}.")
-        
-        st.markdown("---")
-        st.subheader("🎨 2. Estúdio de Capas por IA")
-        
-        if st.button("Gerar 3 Opções de Capa com DALL-E 3"):
-            if not api_key_input:
-                st.error("Insira a Chave da API.")
-            else:
-                status_capa = st.empty()
-                status_capa.text("Gerando capas artísticas de alto padrão...")
-                
-                try:
-                    prompt_base_capa = f"Professional book cover design for a {genero} book titled '{titulo_livro}', inspired by: {ideia_central}. Artistic, high quality, typography space, elegant composition."
-                    
-                    imagens_urls = []
-                    for k in range(3):
-                        variacoes = [
-                            f"{prompt_base_capa} Cinematic lighting, dramatic atmosphere.",
-                            f"{prompt_base_capa} Minimalist editorial style, symbolic and profound.",
-                            f"{prompt_base_capa} Fine art book cover design, deep philosophical mood."
-                        ]
-                        response_img = client.images.generate(
-                            model="dall-e-3",
-                            prompt=variacoes[k],
-                            size="1024x1024",
-                            quality="standard",
-                            n=1,
-                        )
-                        imagens_urls.append(response_img.data[0].url)
-                    
-                    st.session_state.capas_geradas = imagens_urls
-                    status_capa.text("✅ 3 opções de capas geradas com sucesso!")
-                    st.rerun()
-                
-                except Exception as e:
-                    st.error(f"Erro ao gerar capas: {e}")
-
-        if st.session_state.capas_geradas:
-            st.write("### Escolha a sua capa favorita:")
-            cols = st.columns(3)
-            for idx, img_url in enumerate(st.session_state.capas_geradas):
-                with cols[idx]:
-                    st.image(img_url, caption=f"Opção {idx+1}", use_container_width=True)
-
-        st.markdown("---")
-        st.subheader("🔍 3. Revisão Literária e Padronização")
-        
-        if st.button("Revisar Manuscrito e Garantir Nome Único"):
-            status_rev = st.empty()
-            prog_rev = st.progress(0)
-            
-            try:
-                status_rev.text(f"Padronizando o nome '{nome_protagonista}' em todo o livro...")
-                total_c = len(st.session_state.capitulos_texto)
-                
-                for i in range(1, total_c + 1):
-                    prog_rev.progress(int((i / total_c) * 100))
-                    texto_atual = st.session_state.capitulos_texto[i]
-                    
-                    prompt_rev = f"""
-                    Faça uma revisão literária rigorosa neste capítulo. Certifique-se de que a protagonista seja estritamente chamada de '{nome_protagonista}'. Elimine repetições e pola a fluidez. Retorne apenas o HTML revisado (mantendo <h2> e <p>):
-                    {texto_atual}
-                    """
-                    res_r = client.chat.completions.create(
-                        model="gpt-4o",
-                        messages=[{"role": "user", "content": prompt_rev}],
-                        temperature=0.3,
-                        max_tokens=4000
-                    )
-                    st.session_state.capitulos_texto[i] = res_r.choices[0].message.content
-
-                prog_rev.progress(100)
-                status_rev.text("✅ Revisão e padronização concluídas!")
-                st.session_state.livro_revisado = True
-                st.rerun()
-
-            except Exception as e:
-                st.error(f"Erro na revisão: {e}")
-
-        if st.session_state.livro_revisado:
-            st.info("✨ Manuscrito revisado com consistência absoluta.")
-
-        st.markdown("---")
-        st.subheader("📥 4. Diagramação e Exportação do PDF")
-        
-        modelo_diagramacao = st.selectbox(
-            "Escolha o Estilo de Diagramação:",
-            [
-                "📖 Clássico Literário (Times New Roman, recuo elegante)",
-                "🖋️ Moderno Minimalista (Fonte limpa, respiro amplo)",
-                "📜 Épico / Acadêmico (Margens robustas, tom aristocrático)"
-            ]
+        corpo = "".join(
+            f"<p>{html.escape(p).replace(chr(10), '<br>')}</p>"
+            for p in paragrafos
         )
 
-        if st.button("Gerar PDF Final Perfeito"):
-            status_pdf = st.empty()
-            status_pdf.text("Renderizando PDF editorial final...")
-            
-            try:
-                if "Clássico Literário" in modelo_diagramacao:
-                    css_fonte = "'Times New Roman', serif"
-                    css_tamanho = "10pt"
-                    css_linha = "1.45"
-                    css_recuo = "6mm"
-                elif "Moderno Minimalista" in modelo_diagramacao:
-                    css_fonte = "Helvetica, Arial, sans-serif"
-                    css_tamanho = "9.5pt"
-                    css_linha = "1.6"
-                    css_recuo = "4mm"
-                else:
-                    css_fonte = "'Georgia', serif"
-                    css_tamanho = "10.5pt"
-                    css_linha = "1.5"
-                    css_recuo = "8mm"
+        partes.append(
+            f'<section class="capitulo" id="capitulo-{numero}">'
+            f"<h1>Capítulo {numero}</h1>"
+            f"<h2>{titulo_capitulo}</h2>"
+            f"{corpo}</section>"
+        )
 
-                sumario_html = "<h1>Sumário</h1>\n<ul style='list-style: none; padding: 0; line-height: 1.8;'>\n"
-                for idx, titulo_cap in enumerate(st.session_state.sumario_lista, 1):
-                    sumario_html += f"<li><b>Capítulo {idx}:</b> {titulo_cap.split('. ', 1)[-1]}</li>\n"
-                sumario_html += "</ul>\n<div class='page-break'></div>\n"
+        sumario.append(
+            f"<li>Capítulo {numero} — {titulo_capitulo}</li>"
+        )
 
-                corpo_caps = ""
-                for i in range(1, len(st.session_state.capitulos_texto) + 1):
-                    corpo_caps += f"<div class='chapter'>\n{st.session_state.capitulos_texto[i]}\n</div>\n<div class='page-break'></div>\n"
+    bio_html = "".join(
+        f"<p>{html.escape(p.strip())}</p>"
+        for p in re.split(r"\n\s*\n", biografia or "")
+        if p.strip()
+    )
 
-                html_final = f"""
-                <!DOCTYPE html>
-                <html lang="pt">
-                <head>
-                    <meta charset="UTF-8">
-                    <style>
-                        @page {{
-                            size: A5;
-                            margin: 25mm 20mm 25mm 20mm;
-                            @bottom-right {{
-                                content: counter(page);
-                                font-family: {css_fonte};
-                                font-size: 9pt;
-                            }}
-                        }}
-                        body {{
-                            font-family: {css_fonte};
-                            font-size: {css_tamanho};
-                            line-height: {css_linha};
-                            word-spacing: 0.8px;
-                            letter-spacing: 0.1px;
-                            text-align: justify;
-                            color: #1a1a1a;
-                        }}
-                        h1 {{
-                            text-align: center;
-                            font-size: 22pt;
-                            margin-top: 45mm;
-                            margin-bottom: 15mm;
-                            font-weight: normal;
-                        }}
-                        .author-cover {{
-                            text-align: center;
-                            font-size: 13pt;
-                            font-style: italic;
-                            margin-top: 5mm;
-                            color: #444;
-                        }}
-                        h2 {{
-                            font-size: 12.5pt;
-                            margin-top: 15mm;
-                            margin-bottom: 8mm;
-                            page-break-before: always;
-                            font-weight: bold;
-                            color: #222;
-                        }}
-                        p {{
-                            margin-bottom: 7pt;
-                            text-indent: {css_recuo};
-                            orphans: 3;
-                            widows: 3;
-                        }}
-                        .page-break {{
-                            page-break-after: always;
-                        }}
-                        .chapter {{
-                            margin-bottom: 10mm;
-                        }}
-                    </style>
-                </head>
-                <body>
-                    <h1>{titulo_livro}</h1>
-                    <div class="author-cover">{nome_autor}</div>
-                    <div class="page-break"></div>
-                    
-                    {sumario_html}
-                    
-                    {corpo_caps}
-                    
-                    <div class="page-break"></div>
-                    <h2>Sobre o Autor</h2>
-                    <p>{nome_autor} é escritor e observador atento das dinâmicas invisíveis do comportamento humano, investigando temas complexos com uma abordagem estética, filosófica e imersiva.</p>
-                </body>
-                </html>
-                """
+    titulo_html = html.escape(titulo)
+    autor_html = html.escape(autor)
 
-                pdf_filename = "livro_atlas_studio.pdf"
-                HTML(string=html_final).write_pdf(pdf_filename)
-                
-                status_pdf.text("✅ PDF gerado com sucesso!")
-                
-                with open(pdf_filename, "rb") as f:
-                    st.download_button(
-                        label="📥 Baixar Livro em PDF (Atlas Studio)",
-                        data=f,
-                        file_name=f"{titulo_livro.replace(' ', '_')}_AtlasStudio.pdf",
-                        mime="application/pdf"
+    documento = f"""
+    <!doctype html>
+    <html lang="pt-BR">
+    <head>
+    <meta charset="utf-8">
+    <style>
+        @page {{
+            size: 140mm 210mm;
+            margin: 18mm 17mm 18mm 20mm;
+            @bottom-center {{
+                content: counter(page);
+                font-size: 9pt;
+            }}
+        }}
+        @page:first {{
+            @bottom-center {{ content: ""; }}
+        }}
+        body {{
+            font-family: "DejaVu Serif", serif;
+            font-size: 10.5pt;
+            line-height: 1.48;
+            color: #171717;
+        }}
+        .capa {{
+            page-break-after: always;
+            height: 165mm;
+            text-align: center;
+            padding-top: 40mm;
+        }}
+        .capa h1 {{ font-size: 27pt; font-weight: normal; }}
+        .autor {{ margin-top: 20mm; font-size: 13pt; }}
+        .sumario {{ page-break-after: always; }}
+        .sumario h1 {{
+            text-align: center;
+            font-size: 20pt;
+            font-weight: normal;
+        }}
+        .sumario li {{ margin-bottom: 5mm; }}
+        .capitulo {{ page-break-before: always; }}
+        .capitulo h1 {{
+            text-align: center;
+            font-size: 12pt;
+            font-weight: normal;
+            text-transform: uppercase;
+        }}
+        .capitulo h2 {{
+            text-align: center;
+            font-size: 19pt;
+            font-weight: normal;
+            margin-bottom: 12mm;
+            page-break-after: avoid;
+        }}
+        p {{
+            margin: 0 0 3.2mm;
+            text-indent: 7mm;
+            orphans: 3;
+            widows: 3;
+        }}
+        .biografia {{ page-break-before: always; }}
+        .biografia h1 {{
+            text-align: center;
+            font-size: 18pt;
+            font-weight: normal;
+        }}
+    </style>
+    </head>
+    <body>
+        <section class="capa">
+            <h1>{titulo_html}</h1>
+            <div class="autor">{autor_html}</div>
+        </section>
+
+        <section class="sumario">
+            <h1>Sumário</h1>
+            <ul>{"".join(sumario)}</ul>
+        </section>
+
+        {"".join(partes)}
+
+        <section class="biografia">
+            <h1>Sobre o autor</h1>
+            {bio_html}
+        </section>
+    </body>
+    </html>
+    """
+
+    return HTML(string=documento).write_pdf()
+
+
+def conferir_pdf(pdf_bytes, capitulos):
+    """
+    Estima a extensão dos capítulos usando o texto extraído do PDF.
+    Não substitui a conferência visual da paginação.
+    """
+    leitor = PdfReader(io.BytesIO(pdf_bytes))
+    paginas = [(p.extract_text() or "") for p in leitor.pages]
+    inicios = {}
+
+    for pagina, texto in enumerate(paginas):
+        texto_normalizado = re.sub(r"\s+", " ", texto).casefold()
+
+        for numero, capitulo in enumerate(capitulos, start=1):
+            cabecalho = re.sub(
+                r"\s+", " ",
+                f"Capítulo {numero} {capitulo['titulo']}"
+            ).casefold()
+
+            if cabecalho in texto_normalizado:
+                inicios.setdefault(numero, pagina)
+
+    relatorio = []
+
+    numeros = sorted(inicios)
+
+    for pos, numero in enumerate(numeros):
+        inicio = inicios[numero]
+
+        if pos + 1 < len(numeros):
+            fim = inicios[numeros[pos + 1]] - 1
+        else:
+            fim = len(paginas) - 1
+
+        relatorio.append({
+            "numero": numero,
+            "titulo": capitulos[numero - 1]["titulo"],
+            "paginas": max(0, fim - inicio + 1),
+        })
+
+    return len(paginas), relatorio
+
+
+# ==========================================================
+# CONFIGURAÇÕES
+# ==========================================================
+
+with st.sidebar:
+    st.header("⚙️ Configurações")
+
+    try:
+        chave_padrao = st.secrets.get("OPENAI_API_KEY", "")
+    except Exception:
+        chave_padrao = ""
+
+    api_key = st.text_input(
+        "Chave da API OpenAI",
+        value=chave_padrao,
+        type="password",
+        placeholder="Cole sua chave aqui",
+    )
+
+    modelo = st.selectbox(
+        "Modelo de texto",
+        ["gpt-4o-mini", "gpt-4o"],
+    )
+
+    limite_usd = st.number_input(
+        "Limite de custo por projeto (US$)",
+        min_value=0.10,
+        max_value=1000.0,
+        value=5.0,
+        step=0.50,
+    )
+
+    max_tokens = st.slider(
+        "Tokens máximos por capítulo",
+        min_value=1000,
+        max_value=8000,
+        value=5000,
+        step=500,
+    )
+
+    st.caption(
+        "A API é cobrada separadamente. Os preços no código são "
+        "referências e devem ser conferidos antes do uso."
+    )
+
+
+# ==========================================================
+# INTERFACE
+# ==========================================================
+
+st.title("📚 Atlas Studio")
+st.subheader("Editora & Publicador")
+
+st.write(
+    "Gere seu manuscrito por etapas, acompanhe os custos, "
+    "salve o progresso e exporte o miolo em PDF."
+)
+
+aba_novo, aba_salvos, aba_revisao = st.tabs([
+    "Projeto editorial",
+    "Projetos salvos",
+    "Revisar manuscrito",
+])
+
+
+# ==========================================================
+# PROJETOS SALVOS
+# ==========================================================
+
+with aba_salvos:
+    arquivos = sorted(
+        PASTA_PROJETOS.glob("*.json"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+
+    if not arquivos:
+        st.info("Ainda não existem projetos salvos.")
+    else:
+        opcoes = {
+            f"{p.stem} — {datetime.fromtimestamp(p.stat().st_mtime):%d/%m/%Y %H:%M}": str(p)
+            for p in arquivos
+        }
+
+        selecionado = st.selectbox(
+            "Escolha um projeto",
+            list(opcoes.keys()),
+        )
+
+        if st.button("Carregar projeto"):
+            st.session_state["projeto_atlas"] = carregar_projeto(
+                opcoes[selecionado]
+            )
+            st.success("Projeto carregado. Abra a aba Projeto editorial.")
+            st.rerun()
+
+        st.caption(
+            "Os projetos são salvos na pasta atlas_projects. "
+            "Faça cópias de segurança dessa pasta."
+        )
+
+
+# ==========================================================
+# CRIAÇÃO E RETOMADA
+# ==========================================================
+
+with aba_novo:
+    projeto_atual = st.session_state.get("projeto_atlas")
+
+    if projeto_atual:
+        st.info(
+            f"Projeto em andamento: {projeto_atual['titulo']} — "
+            f"{len(projeto_atual.get('capitulos', []))} capítulo(s) salvo(s)."
+        )
+
+    with st.form("form_projeto"):
+        titulo = st.text_input(
+            "Título do livro",
+            value=(projeto_atual or {}).get("titulo", ""),
+        )
+
+        autor = st.text_input(
+            "Nome do autor",
+            value=(projeto_atual or {}).get("autor", ""),
+        )
+
+        genero = st.selectbox(
+            "Gênero literário",
+            [
+                "Romance literário",
+                "Mistério / suspense",
+                "Fantasia épica",
+                "Ficção histórica",
+                "Desenvolvimento pessoal / filosofia",
+            ],
+        )
+
+        premissa = st.text_area(
+            "Premissa ou sinopse",
+            value=(projeto_atual or {}).get("premissa", ""),
+            height=120,
+        )
+
+        tom = st.selectbox(
+            "Tom de voz",
+            [
+                "Clássico, atmosférico e misterioso",
+                "Contemplativo, poético e reflexivo",
+                "Dramático e envolvente",
+                "Direto e acessível",
+            ],
+        )
+
+        quantidade = st.slider(
+            "Número de capítulos",
+            4, 20,
+            int((projeto_atual or {}).get("quantidade", 12)),
+        )
+
+        paginas_minimas = st.number_input(
+            "Páginas mínimas por capítulo",
+            min_value=11,
+            max_value=30,
+            value=int((projeto_atual or {}).get("paginas_minimas", 11)),
+        )
+
+        palavras_por_pagina = st.slider(
+            "Estimativa de palavras por página",
+            min_value=180,
+            max_value=350,
+            value=int((projeto_atual or {}).get("palavras_por_pagina", 250)),
+            step=10,
+        )
+
+        biografia = st.text_area(
+            "Biografia do autor",
+            value=(projeto_atual or {}).get("biografia", ""),
+        )
+
+        salvar_dados = st.form_submit_button(
+            "Salvar dados do projeto",
+            type="primary",
+        )
+
+    if salvar_dados:
+        if projeto_atual:
+            projeto = projeto_atual
+        else:
+            projeto = {
+                "capitulos": [],
+                "estrutura": [],
+                "revisoes": {},
+                "uso": {
+                    "entrada": 0,
+                    "saida": 0,
+                    "custo_usd": 0.0,
+                },
+            }
+
+        projeto.update({
+            "titulo": titulo.strip(),
+            "autor": autor.strip(),
+            "genero": genero,
+            "premissa": premissa.strip(),
+            "tom": tom,
+            "quantidade": quantidade,
+            "paginas_minimas": int(paginas_minimas),
+            "palavras_por_pagina": int(palavras_por_pagina),
+            "meta_palavras": int(paginas_minimas * palavras_por_pagina),
+            "biografia": biografia.strip(),
+            "modelo": modelo,
+            "limite_usd": float(limite_usd),
+        })
+
+        st.session_state["projeto_atlas"] = projeto
+        destino = salvar_projeto(projeto)
+        st.success(f"Projeto salvo: {destino}")
+
+    projeto = st.session_state.get("projeto_atlas")
+
+    if projeto:
+        meta = projeto.get(
+            "meta_palavras",
+            projeto.get("paginas_minimas", 11)
+            * projeto.get("palavras_por_pagina", 250),
+        )
+
+        st.markdown("### Meta editorial")
+        st.write(
+            f"Meta aproximada: **{meta:,} palavras por capítulo** "
+            f"para tentar alcançar {projeto['paginas_minimas']} páginas."
+            .replace(",", ".")
+        )
+
+        concluidos = len(projeto.get("capitulos", []))
+        total = projeto["quantidade"]
+
+        st.progress(min(concluidos / total, 1.0))
+        st.write(f"Capítulos concluídos: **{concluidos}/{total}**")
+
+        uso = projeto.get("uso", {})
+        custo = uso.get("custo_usd", 0.0)
+        limite_atual = projeto.get("limite_usd", limite_usd)
+
+        st.write(
+            f"Tokens de entrada: {uso.get('entrada', 0):,} · "
+            f"tokens de saída: {uso.get('saida', 0):,}"
+            .replace(",", ".")
+        )
+        st.write(f"**Custo estimado acumulado: US$ {custo:.4f}**")
+
+        if custo >= limite_atual:
+            st.error(
+                "Limite de orçamento atingido. A geração está bloqueada "
+                "até você aumentar o limite conscientemente."
+            )
+        elif limite_atual > 0:
+            st.caption(
+                f"Saldo estimado: US$ {limite_atual - custo:.4f}"
+            )
+
+        if st.button("Gerar / retomar manuscrito", type="primary"):
+            if not api_key.strip():
+                st.error("Informe a chave da API na barra lateral.")
+            elif not projeto.get("titulo") or not projeto.get("premissa"):
+                st.error("Preencha título e premissa e salve os dados.")
+            elif projeto.get("uso", {}).get("custo_usd", 0) >= projeto.get(
+                "limite_usd", limite_usd
+            ):
+                st.error("O limite de orçamento foi atingido.")
+            else:
+                cliente = OpenAI(api_key=api_key.strip())
+
+                try:
+                    # A estrutura só é criada se ainda não existir.
+                    if not projeto.get("estrutura"):
+                        prompt_estrutura = f"""
+Crie exatamente {projeto['quantidade']} títulos de capítulos para o livro
+"{projeto['titulo']}".
+
+Gênero: {projeto['genero']}
+Premissa: {projeto['premissa']}
+Tom: {projeto['tom']}
+
+Crie progressão lógica, variedade narrativa e um desfecho coerente.
+Responda somente com uma lista numerada, um título por linha.
+"""
+                        texto, uso_chamada = chamada_ia(
+                            cliente,
+                            modelo,
+                            [
+                                {
+                                    "role": "system",
+                                    "content": "Você é um editor literário experiente. Escreva em português brasileiro.",
+                                },
+                                {
+                                    "role": "user",
+                                    "content": prompt_estrutura,
+                                },
+                            ],
+                            max_tokens=1500,
+                        )
+
+                        registrar_uso(projeto, uso_chamada, modelo)
+                        salvar_projeto(projeto)
+
+                        if projeto["uso"]["custo_usd"] >= projeto["limite_usd"]:
+                            st.error(
+                                "Limite atingido durante o planejamento. "
+                                "A estrutura foi salva; a geração foi interrompida."
+                            )
+                            st.stop()
+
+                        titulos = extrair_titulos(
+                            texto,
+                            projeto["quantidade"],
+                        )
+
+                        if len(titulos) != projeto["quantidade"]:
+                            salvar_projeto(projeto)
+                            st.error(
+                                f"A IA retornou {len(titulos)} títulos, "
+                                f"mas eram esperados {projeto['quantidade']}. "
+                                "Tente novamente."
+                            )
+                            st.stop()
+
+                        projeto["estrutura"] = titulos
+                        salvar_projeto(projeto)
+
+                    concluidos_por_numero = {
+                        c["numero"]: c
+                        for c in projeto.get("capitulos", [])
+                    }
+
+                    barra = st.progress(0)
+                    status = st.empty()
+
+                    for numero, titulo_capitulo in enumerate(
+                        projeto["estrutura"], start=1
+                    ):
+                        # Não cobra novamente pelos capítulos já salvos.
+                        if numero in concluidos_por_numero:
+                            barra.progress(numero / total)
+                            continue
+
+                        custo_atual = projeto["uso"]["custo_usd"]
+
+                        if custo_atual >= projeto["limite_usd"]:
+                            salvar_projeto(projeto)
+                            status.error(
+                                "Orçamento atingido. Progresso salvo."
+                            )
+                            break
+
+                        status.write(
+                            f"Escrevendo capítulo {numero}/{total}: "
+                            f"{titulo_capitulo}"
+                        )
+
+                        anteriores = projeto.get("capitulos", [])[-6:]
+
+                        memoria = "\n".join(
+                            f"Capítulo {c['numero']} — {c['titulo']}: "
+                            f"{c.get('resumo', '')}"
+                            for c in anteriores
+                        ) or "Nenhum capítulo anterior."
+
+                        prompt_capitulo = f"""
+Escreva o capítulo {numero} de {total} do livro "{projeto['titulo']}".
+
+Autor: {projeto['autor']}
+Gênero: {projeto['genero']}
+Premissa: {projeto['premissa']}
+Tom: {projeto['tom']}
+Título do capítulo: {titulo_capitulo}
+
+Meta: aproximadamente {projeto['meta_palavras']} palavras.
+A meta busca atingir pelo menos {projeto['paginas_minimas']} páginas
+em um livro de 14 x 21 cm, mas a paginação será conferida depois.
+
+Desenvolva cenas, personagens, conflitos, diálogos e consequências.
+Não repita ideias apenas para aumentar o volume.
+Mantenha nomes, motivações, cronologia e ambientação consistentes.
+
+Resumo dos capítulos anteriores:
+{memoria}
+
+Escreva em português brasileiro natural.
+Não inclua notas editoriais, comentários sobre o processo ou instruções.
+Entregue somente o texto do capítulo.
+"""
+
+                        texto_capitulo, uso_capitulo = chamada_ia(
+                            cliente,
+                            modelo,
+                            [
+                                {
+                                    "role": "system",
+                                    "content": "Você é um romancista profissional. Priorize qualidade literária, continuidade e português brasileiro.",
+                                },
+                                {
+                                    "role": "user",
+                                    "content": prompt_capitulo,
+                                },
+                            ],
+                            temperatura=0.75,
+                            max_tokens=max_tokens,
+                        )
+
+                        registrar_uso(projeto, uso_capitulo, modelo)
+
+                        if not texto_capitulo:
+                            salvar_projeto(projeto)
+                            raise RuntimeError(
+                                f"O capítulo {numero} voltou vazio."
+                            )
+
+                        # Gera um resumo curto para manter a continuidade.
+                        resumo, uso_resumo = chamada_ia(
+                            cliente,
+                            modelo,
+                            [{
+                                "role": "user",
+                                "content": (
+                                    "Resuma em até 120 palavras os acontecimentos, "
+                                    "personagens, revelações e ganchos deste capítulo. "
+                                    "Não invente fatos.\n\n" + texto_capitulo
+                                ),
+                            }],
+                            temperatura=0.2,
+                            max_tokens=250,
+                        )
+
+                        registrar_uso(projeto, uso_resumo, modelo)
+
+                        projeto.setdefault("capitulos", []).append({
+                            "numero": numero,
+                            "titulo": titulo_capitulo,
+                            "texto": texto_capitulo,
+                            "resumo": resumo,
+                            "palavras": contar_palavras(texto_capitulo),
+                            "criado_em": datetime.now().isoformat(
+                                timespec="seconds"
+                            ),
+                        })
+
+                        # Ponto de salvamento após cada capítulo completo.
+                        salvar_projeto(projeto)
+                        barra.progress(numero / total)
+
+                        status.write(
+                            f"Capítulo {numero} salvo — "
+                            f"{contar_palavras(texto_capitulo):,} palavras."
+                            .replace(",", ".")
+                        )
+
+                        if projeto["uso"]["custo_usd"] >= projeto["limite_usd"]:
+                            status.warning(
+                                "Limite atingido após salvar o capítulo. "
+                                "Aumente o orçamento para continuar."
+                            )
+                            break
+
+                    st.session_state["projeto_atlas"] = projeto
+                    salvar_projeto(projeto)
+                    st.success(
+                        "Progresso salvo. Você pode retomar a geração "
+                        "a qualquer momento."
+                    )
+                    st.rerun()
+
+                except Exception as erro:
+                    salvar_projeto(projeto)
+                    st.session_state["projeto_atlas"] = projeto
+                    st.error(f"Erro durante a geração: {erro}")
+                    st.warning(
+                        "Os capítulos já concluídos foram salvos. "
+                        "Corrija o problema e tente retomar."
                     )
 
-            except Exception as e:
-                st.error(f"Erro ao gerar PDF: {e}")
+        st.divider()
+        st.subheader("Exportação do manuscrito")
 
-else:
-    st.info("Modo de upload de manuscrito `.docx` ativo.")
+        if st.button("Gerar PDF 14 × 21 cm"):
+            capitulos = sorted(
+                projeto.get("capitulos", []),
+                key=lambda c: c["numero"],
+            )
+
+            if not capitulos:
+                st.error("Gere pelo menos um capítulo primeiro.")
+            else:
+                try:
+                    pdf = criar_pdf(
+                        projeto["titulo"],
+                        projeto["autor"],
+                        [
+                            {"titulo": c["titulo"], "texto": c["texto"]}
+                            for c in capitulos
+                        ],
+                        projeto.get("biografia", ""),
+                    )
+
+                    total_paginas, relatorio = conferir_pdf(pdf, [
+                        {"titulo": c["titulo"], "texto": c["texto"]}
+                        for c in capitulos
+                    ])
+
+                    st.session_state["atlas_pdf"] = pdf
+                    st.session_state["atlas_pdf_nome"] = (
+                        nome_seguro(projeto["titulo"]) + "_miolo.pdf"
+                    )
+                    st.session_state["atlas_pdf_paginas"] = total_paginas
+                    st.session_state["atlas_pdf_relatorio"] = relatorio
+
+                except Exception as erro:
+                    st.error(f"Erro ao gerar ou conferir o PDF: {erro}")
+
+        if st.session_state.get("atlas_pdf"):
+            st.download_button(
+                "📥 Baixar miolo em PDF",
+                data=st.session_state["atlas_pdf"],
+                file_name=st.session_state["atlas_pdf_nome"],
+                mime="application/pdf",
+                type="primary",
+            )
+
+            st.write(
+                f"Total de páginas no arquivo: "
+                f"**{st.session_state['atlas_pdf_paginas']}**"
+            )
+
+            st.subheader("Relatório aproximado de páginas")
+
+            for item in st.session_state["atlas_pdf_relatorio"]:
+                if item["paginas"] < projeto["paginas_minimas"]:
+                    st.warning(
+                        f"Capítulo {item['numero']} — {item['titulo']}: "
+                        f"{item['paginas']} página(s). Meta: "
+                        f"{projeto['paginas_minimas']}."
+                    )
+                else:
+                    st.success(
+                        f"Capítulo {item['numero']} — {item['titulo']}: "
+                        f"{item['paginas']} páginas."
+                    )
+
+            st.caption(
+                "A extração automática do PDF pode falhar em alguns layouts. "
+                "Confira visualmente as quebras e o início e fim de cada capítulo."
+            )
+
+        if projeto.get("capitulos"):
+            st.subheader("Capítulos concluídos")
+
+            for capitulo in sorted(
+                projeto["capitulos"],
+                key=lambda c: c["numero"],
+            ):
+                with st.expander(
+                    f"Capítulo {capitulo['numero']} — "
+                    f"{capitulo['titulo']} · "
+                    f"{capitulo.get('palavras', contar_palavras(capitulo['texto']))} palavras"
+                ):
+                    st.text_area(
+                        "Texto do capítulo",
+                        value=capitulo["texto"],
+                        height=260,
+                        disabled=True,
+                        key=f"texto_capitulo_{capitulo['numero']}",
+                    )
+
+
+# ==========================================================
+# REVISÃO COM PRESERVAÇÃO DO ORIGINAL
+# ==========================================================
+
+with aba_revisao:
+    projeto = st.session_state.get("projeto_atlas")
+
+    if not projeto or not projeto.get("capitulos"):
+        st.info(
+            "Carregue ou gere um projeto com capítulos para habilitar a revisão."
+        )
+    else:
+        st.write(
+            "A versão revisada ficará separada do original. "
+            "Você decide se quer aprová-la."
+        )
+
+        opcoes_capitulos = {
+            f"Capítulo {c['numero']} — {c['titulo']}": c["numero"]
+            for c in sorted(
+                projeto["capitulos"],
+                key=lambda c: c["numero"],
+            )
+        }
+
+        escolhido = st.selectbox(
+            "Capítulo para revisar",
+            list(opcoes_capitulos.keys()),
+        )
+
+        numero_escolhido = opcoes_capitulos[escolhido]
+        capitulo = next(
+            c for c in projeto["capitulos"]
+            if c["numero"] == numero_escolhido
+        )
+
+        instrucao = st.text_area(
+            "Orientações da revisão",
+            "Melhore clareza, gramática, fluidez e ritmo sem alterar os acontecimentos, os personagens ou o sentido do texto.",
+        )
+
+        if st.button("Gerar versão revisada"):
+            if not api_key.strip():
+                st.error("Informe a chave da API na barra lateral.")
+            elif projeto["uso"]["custo_usd"] >= projeto["limite_usd"]:
+                st.error("Limite de orçamento atingido.")
+            else:
+                try:
+                    cliente = OpenAI(api_key=api_key.strip())
+
+                    revisado, uso = chamada_ia(
+                        cliente,
+                        modelo,
+                        [
+                            {
+                                "role": "system",
+                                "content": (
+                                    "Você é um editor literário. Preserve os fatos, "
+                                    "a intenção e a personalidade dos personagens. "
+                                    "Não invente acontecimentos."
+                                ),
+                            },
+                            {
+                                "role": "user",
+                                "content": (
+                                    f"Instruções: {instrucao}\n"
+                                    f"Título: {capitulo['titulo']}\n"
+                                    "Revise o texto e entregue somente a versão final:\n\n"
+                                    + capitulo["texto"]
+                                ),
+                            },
+                        ],
+                        temperatura=0.25,
+                        max_tokens=max_tokens,
+                    )
+
+                    registrar_uso(projeto, uso, modelo)
+
+                    projeto.setdefault("revisoes", {})[
+                        str(numero_escolhido)
+                    ] = {
+                        "texto": revisado,
+                        "instrucoes": instrucao,
+                        "criada_em": datetime.now().isoformat(
+                            timespec="seconds"
+                        ),
+                    }
+
+                    salvar_projeto(projeto)
+                    st.session_state["projeto_atlas"] = projeto
+                    st.success(
+                        "Revisão salva separadamente. O original continua intacto."
+                    )
+                    st.rerun()
+
+                except Exception as erro:
+                    salvar_projeto(projeto)
+                    st.error(f"Falha na revisão: {erro}")
+
+        revisao = projeto.get("revisoes", {}).get(
+            str(numero_escolhido)
+        )
+
+        if revisao:
+            coluna_original, coluna_revisada = st.columns(2)
+
+            with coluna_original:
+                st.markdown("**Texto original**")
+                st.text_area(
+                    "Original",
+                    capitulo["texto"],
+                    height=350,
+                    disabled=True,
+                    key=f"original_{numero_escolhido}",
+                )
+
+            with coluna_revisada:
+                st.markdown("**Texto revisado**")
+                st.text_area(
+                    "Revisado",
+                    revisao["texto"],
+                    height=350,
+                    disabled=True,
+                    key=f"revisado_{numero_escolhido}",
+                )
+
+            if st.button("Aprovar e substituir o original"):
+                capitulo["texto"] = revisao["texto"]
+                capitulo["palavras"] = contar_palavras(revisao["texto"])
+
+                projeto["revisoes"].pop(str(numero_escolhido), None)
+                salvar_projeto(projeto)
+                st.session_state["projeto_atlas"] = projeto
+                st.success("Revisão aprovada e projeto salvo.")
+                st.rerun()
+
+            if st.button("Descartar versão revisada"):
+                projeto["revisoes"].pop(str(numero_escolhido), None)
+                salvar_projeto(projeto)
+                st.session_state["projeto_atlas"] = projeto
+                st.success("Revisão descartada. O original foi preservado.")
+                st.rerun()
+
+
+st.divider()
+st.caption(
+    "A meta de 11 páginas é verificada depois da diagramação, mas não é "
+    "garantida pela contagem de palavras. O relatório automático é aproximado. "
+    "Faça backup da pasta atlas_projects e confira o PDF antes de publicar."
+)
