@@ -3,36 +3,77 @@ import streamlit as st
 from openai import OpenAI
 from weasyprint import HTML, CSS
 
-st.set_page_config(page_title="Publicador Literário Ultra-Denso", page_icon="📚", layout="centered")
+st.set_page_config(page_title="Atlas Studio: Editora & Publicador 1-Click", page_icon="📚", layout="centered")
 
+# Estilização Visual Avançada (Tema Editorial Moderno e Elegante)
 st.markdown("""
     <style>
-    .main { background-color: #0e1117; color: #ffffff; }
-    .stButton>button { width: 100%; background-color: #ff4b4b; color: white; font-weight: bold; border-radius: 8px; padding: 10px; }
+    .stApp {
+        background-color: #0b0f19;
+        color: #f3f4f6;
+        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    }
+    .main-title {
+        font-size: 2.2rem;
+        font-weight: 800;
+        background: linear-gradient(90deg, #60a5fa, #c084fc);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        text-align: center;
+        margin-bottom: 0px;
+    }
+    .subtitle {
+        text-align: center;
+        color: #9ca3af;
+        font-size: 1rem;
+        margin-bottom: 2rem;
+    }
+    .stButton>button {
+        width: 100%;
+        background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+        color: white;
+        font-weight: 600;
+        border: none;
+        border-radius: 12px;
+        padding: 12px 20px;
+        box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3);
+        transition: all 0.3s ease;
+    }
+    .stButton>button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 16px rgba(79, 70, 229, 0.5);
+    }
+    .stTextInput>div>div>input, .stTextArea>div>div>textarea, .stSelectbox>div>div>div {
+        background-color: #1e1b4b;
+        color: #f3f4f6;
+        border: 1px solid #312e81;
+        border-radius: 10px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
-st.title("📚 Publicador Literário Ultra-Denso (11+ Páginas por Capítulo)")
-st.write("Sistema de máxima profundidade literária: 12 capítulos estruturados em 10 subpartes encadeadas cada (totalizando 120 chamadas controladas para atingir o volume real de 192+ páginas).")
+st.markdown('<p class="main-title">📚 Atlas Studio</p>', unsafe_allow_html=True)
+st.markdown('<p class="subtitle">Editora e Estúdio Automatizado de Alta Densidade Literária</p>', unsafe_allow_html=True)
 
 secret_key = st.secrets.get("OPENAI_API_KEY", "") if hasattr(st, "secrets") else ""
-api_key_input = st.text_input("Chave da API OpenAI (GPT-4o / DALL-E 3)", value=secret_key, type="password")
+api_key_input = st.text_input("🔑 Chave da API OpenAI (GPT-4o / DALL-E 3)", value=secret_key, type="password")
 
 if api_key_input:
     client = OpenAI(api_key=api_key_input)
 else:
     st.warning("⚠️ Insira a sua chave da API da OpenAI para continuar.")
 
-modo = st.radio("Escolha o Modo:", ["📝 Gerar Obra Ultra-Densa (12 Capítulos / 10 Subpartes)", "📁 Enviar Manuscrito Existente (.docx)"])
+modo = st.radio("Selecione o Fluxo de Trabalho:", ["📝 Gerar Obra Consistente (12 Capítulos / 10 Subpartes)", "📁 Enviar Manuscrito Existente (.docx)"])
 st.markdown("---")
 
-if modo == "📝 Gerar Obra Ultra-Densa (12 Capítulos / 10 Subpartes)":
-    st.subheader("1. Configuração da Obra de Extensão Máxima")
+if modo == "📝 Gerar Obra Consistente (12 Capítulos / 10 Subpartes)":
+    st.subheader("⚙️ Configuração e Identidade da Obra")
     
     titulo_livro = st.text_input("Título do Livro", "O Peso do Silêncio e das Estrelas")
     nome_autor = st.text_input("Nome do Autor", "Uterliton Araujo Silva")
+    nome_protagonista = st.text_input("Nome do Protagonista Principal (Trava de Identidade)", "Clara")
     genero = st.selectbox("Gênero Literário", ["Romance Filosófico / Épico", "Desenvolvimento Pessoal / Filosofia Profunda", "Drama Psicológico Intenso"])
-    ideia_central = st.text_area("Premisa, Personagens Principais e Enredo", "Uma obra monumental sobre escolhas, o peso do tempo, a vulnerabilidade e a descoberta interior com densidade narrativa absoluta.")
+    ideia_central = st.text_area("Premisa e Enredo Geral", "Uma obra monumental sobre escolhas, o peso do tempo, a vulnerabilidade e a descoberta interior.")
     tom_voz = st.selectbox("Tom de Voz", ["Contemplativo, extremamente detalhado, filosófico e imersivo", "Dramático, poético e analítico"])
 
     # Estados da sessão para persistência
@@ -45,10 +86,12 @@ if modo == "📝 Gerar Obra Ultra-Densa (12 Capítulos / 10 Subpartes)":
     if "capas_geradas" not in st.session_state:
         st.session_state.capas_geradas = []
 
-    # BOTÃO 1: Escrever Obra Ultra-Densa (12 Capítulos x 10 Subpartes)
-    if st.button("🚀 1. Escrever Obra Ultra-Densa (Pode levar alguns minutos)"):
+    # BOTÃO 1: Escrever Obra
+    if st.button("🚀 1. Escrever Obra com Protagonista Único (12 Capítulos)"):
         if not api_key_input:
             st.error("Insira a Chave da API.")
+        elif not nome_protagonista:
+            st.error("Por favor, preencha o nome do protagonista.")
         else:
             progress_bar = st.progress(0)
             status_text = st.empty()
@@ -57,7 +100,7 @@ if modo == "📝 Gerar Obra Ultra-Densa (12 Capítulos / 10 Subpartes)":
                 status_text.text("Passo 1: Criando arquitetura de 12 capítulos...")
                 progress_bar.progress(2)
                 
-                prompt_est = f"Crie um sumário exato de 12 títulos de capítulos coesos e progressivos para o livro '{titulo_livro}' ({genero}). Retorne apenas os 12 títulos, um por linha, numerados."
+                prompt_est = f"Crie um sumário exato de 12 títulos de capítulos coesos e progressivos para o livro '{titulo_livro}' ({genero}), centrado na jornada de {nome_protagonista}. Retorne apenas os 12 títulos, um por linha, numerados."
                 res_est = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt_est}], temperature=0.7)
                 capitulos_limpos = [c.strip() for c in res_est.choices[0].message.content.split("\n") if c.strip()][:12]
                 st.session_state.sumario_lista = capitulos_limpos
@@ -69,21 +112,21 @@ if modo == "📝 Gerar Obra Ultra-Densa (12 Capítulos / 10 Subpartes)":
 
                 for i, cap_titulo in enumerate(capitulos_limpos, 1):
                     texto_completo_capitulo = f"<h2>{cap_titulo}</h2>\n"
-                    contexto_sub = f"Início do capítulo {cap_titulo}. Estabelecendo o tom e o cenário inicial."
+                    contexto_sub = f"Início do capítulo {cap_titulo} com a protagonista {nome_protagonista}."
 
-                    # Loop de 10 subpartes encadeadas para garantir 3.300+ palavras por capítulo
                     for sub in range(1, 11):
                         etapa_atual += 1
                         porcentagem = int(5 + (etapa_atual / total_etapas) * 85)
                         progress_bar.progress(min(porcentagem, 95))
-                        status_text.text(f"Escrevendo Capítulo {i}/12 (Subparte {sub}/10)...")
+                        status_text.text(f"Escrevendo Capítulo {i}/12 (Subparte {sub}/10) - Focado em {nome_protagonista}...")
 
                         prompt_sub = f"""
                         Escreva a Subparte {sub} de 10 do Capítulo {i} ({cap_titulo}) para o livro '{titulo_livro}', de {nome_autor}.
-                        DIRETRIZES RIGOROSAS DE VOLUME E CONTINUIDADE:
-                        - Mantenha absoluta consistência com os nomes dos personagens, idades, lugares e acontecimentos anteriores.
-                        - Desenvolva diálogos complexos, descrições ricas de ambientes e reflexões psicológicas aprofundadas. Esta subparte deve ser longa.
-                        - Contexto do trecho imediatamente anterior: {contexto_sub[-500:]}
+                        REGRAS ABSOLUTAS DE CONTINUIDADE E IDENTIDADE (OBRIGATÓRIO):
+                        - A ÚNICA E EXCLUSIVA protagonista desta história deve ser '{nome_protagonista}'. NUNCA mude o nome para outro. É sempre '{nome_protagonista}' do início ao fim.
+                        - Mantenha absoluta consistência com os acontecimentos anteriores.
+                        - Desenvolva diálogos profundos, descrições ricas e reflexões psicológicas aprofundadas. Esta subparte deve ser longa.
+                        - Contexto do trecho anterior: {contexto_sub[-500:]}
                         - Tom: {tom_voz}.
                         - Formatação: Retorne estritamente em HTML limpo usando tags <p> para os parágrafos. Nunca use blocos de código ```html.
                         """
@@ -101,7 +144,7 @@ if modo == "📝 Gerar Obra Ultra-Densa (12 Capítulos / 10 Subpartes)":
                     st.session_state.capitulos_texto[i] = texto_completo_capitulo
 
                 progress_bar.progress(100)
-                status_text.text("✅ Obra Ultra-Densa gerada com sucesso! Todos os capítulos atingiram a extensão máxima.")
+                status_text.text("✅ Obra gerada com identidade e protagonista fixos!")
                 st.session_state.livro_revisado = False
                 st.rerun()
 
@@ -109,20 +152,20 @@ if modo == "📝 Gerar Obra Ultra-Densa (12 Capítulos / 10 Subpartes)":
                 st.error(f"Erro na geração: {e}")
 
     if st.session_state.capitulos_texto:
-        st.success(f"📚 Obra carregada na memória com {len(st.session_state.capitulos_texto)} capítulos de extensão máxima (~11+ páginas cada).")
+        st.success(f"📚 Obra carregada na memória com capítulos consistentes focados em {nome_protagonista}.")
         
         st.markdown("---")
-        st.subheader("2. Estúdio de Capas por IA")
+        st.subheader("🎨 2. Estúdio de Capas por IA")
         
-        if st.button("🎨 Gerar 3 Opções de Capa com Base no Livro"):
+        if st.button("Gerar 3 Opções de Capa com DALL-E 3"):
             if not api_key_input:
                 st.error("Insira a Chave da API.")
             else:
                 status_capa = st.empty()
-                status_capa.text("Gerando capas artísticas com DALL-E 3...")
+                status_capa.text("Gerando capas artísticas de alto padrão...")
                 
                 try:
-                    prompt_base_capa = f"Professional book cover design for a {genero} book titled '{titulo_livro}', inspired by: {ideia_central}. Artistic, high quality, typography space, elegant composition, stylistic masterpiece."
+                    prompt_base_capa = f"Professional book cover design for a {genero} book titled '{titulo_livro}', inspired by: {ideia_central}. Artistic, high quality, typography space, elegant composition."
                     
                     imagens_urls = []
                     for k in range(3):
@@ -152,17 +195,17 @@ if modo == "📝 Gerar Obra Ultra-Densa (12 Capítulos / 10 Subpartes)":
             cols = st.columns(3)
             for idx, img_url in enumerate(st.session_state.capas_geradas):
                 with cols[idx]:
-                    st.image(img_url, caption=f"Opção {idx+1}", use_column_width=True)
+                    st.image(img_url, caption=f"Opção {idx+1}", use_container_width=True)
 
         st.markdown("---")
-        st.subheader("3. Revisão Literária")
+        st.subheader("🔍 3. Revisão Literária e Padronização")
         
-        if st.button("🔍 Revisar Manuscrito (Verificar Continuidade e Qualidade)"):
+        if st.button("Revisar Manuscrito e Garantir Nome Único"):
             status_rev = st.empty()
             prog_rev = st.progress(0)
             
             try:
-                status_rev.text("Editor literário virtual polindo a coesão e o fluxo narrativo...")
+                status_rev.text(f"Padronizando o nome '{nome_protagonista}' em todo o livro...")
                 total_c = len(st.session_state.capitulos_texto)
                 
                 for i in range(1, total_c + 1):
@@ -170,19 +213,19 @@ if modo == "📝 Gerar Obra Ultra-Densa (12 Capítulos / 10 Subpartes)":
                     texto_atual = st.session_state.capitulos_texto[i]
                     
                     prompt_rev = f"""
-                    Faça uma revisão literária profunda neste capítulo longo, eliminando eventuais repetições entre as subpartes e polindo a fluidez literária. Retorne apenas o HTML revisado (mantendo <h2> e <p>):
+                    Faça uma revisão literária rigorosa neste capítulo. Certifique-se de que a protagonista seja estritamente chamada de '{nome_protagonista}'. Elimine repetições e pola a fluidez. Retorne apenas o HTML revisado (mantendo <h2> e <p>):
                     {texto_atual}
                     """
                     res_r = client.chat.completions.create(
                         model="gpt-4o",
                         messages=[{"role": "user", "content": prompt_rev}],
-                        temperature=0.5,
+                        temperature=0.3,
                         max_tokens=4000
                     )
                     st.session_state.capitulos_texto[i] = res_r.choices[0].message.content
 
                 prog_rev.progress(100)
-                status_rev.text("✅ Revisão literária concluída com sucesso!")
+                status_rev.text("✅ Revisão e padronização concluídas!")
                 st.session_state.livro_revisado = True
                 st.rerun()
 
@@ -190,23 +233,23 @@ if modo == "📝 Gerar Obra Ultra-Densa (12 Capítulos / 10 Subpartes)":
                 st.error(f"Erro na revisão: {e}")
 
         if st.session_state.livro_revisado:
-            st.info("✨ Manuscrito revisado e validado com sucesso.")
+            st.info("✨ Manuscrito revisado com consistência absoluta.")
 
         st.markdown("---")
-        st.subheader("4. Modelos de Diagramação e PDF Final")
+        st.subheader("📥 4. Diagramação e Exportação do PDF")
         
         modelo_diagramacao = st.selectbox(
-            "Escolha o Modelo de Diagramação Editorial:",
+            "Escolha o Estilo de Diagramação:",
             [
-                "📖 Clássico Literário (Times New Roman, espaçamento tradicional, recuo elegante)",
-                "🖋️ Moderno Minimalista (Fonte limpa sem serifa, maior respiro entre linhas)",
-                "📜 Épico / Acadêmico (Margens robustas, corpo denso, tom aristocrático)"
+                "📖 Clássico Literário (Times New Roman, recuo elegante)",
+                "🖋️ Moderno Minimalista (Fonte limpa, respiro amplo)",
+                "📜 Épico / Acadêmico (Margens robustas, tom aristocrático)"
             ]
         )
 
-        if st.button("📥 Gerar PDF Final com o Modelo Selecionado"):
+        if st.button("Gerar PDF Final Perfeito"):
             status_pdf = st.empty()
-            status_pdf.text("Aplicando estilos e renderizando PDF volumoso...")
+            status_pdf.text("Renderizando PDF editorial final...")
             
             try:
                 if "Clássico Literário" in modelo_diagramacao:
@@ -310,16 +353,16 @@ if modo == "📝 Gerar Obra Ultra-Densa (12 Capítulos / 10 Subpartes)":
                 </html>
                 """
 
-                pdf_filename = "livro_ultra_denso.pdf"
+                pdf_filename = "livro_atlas_studio.pdf"
                 HTML(string=html_final).write_pdf(pdf_filename)
                 
-                status_pdf.text("✅ PDF volumoso de 192+ páginas gerado com sucesso!")
+                status_pdf.text("✅ PDF gerado com sucesso!")
                 
                 with open(pdf_filename, "rb") as f:
                     st.download_button(
-                        label="📥 Baixar Livro Ultra-Denso em PDF",
+                        label="📥 Baixar Livro em PDF (Atlas Studio)",
                         data=f,
-                        file_name=f"{titulo_livro.replace(' ', '_')}_UltraDenso.pdf",
+                        file_name=f"{titulo_livro.replace(' ', '_')}_AtlasStudio.pdf",
                         mime="application/pdf"
                     )
 
